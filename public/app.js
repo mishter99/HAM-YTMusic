@@ -160,6 +160,42 @@ const Library = {
   },
 };
 
+/* ================= mobile background audio keeper ================= */
+// Silent audio loop to maintain mobile browser audio session and background playback
+const SILENT_AUDIO_URI = 'data:audio/mp3;base64,//uQxAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAACcQCAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICACAAACcQCAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA=';
+let bgAudio = null;
+
+function getBgAudio() {
+  if (!bgAudio) {
+    bgAudio = $('#bg-keepalive');
+    if (!bgAudio) {
+      bgAudio = document.createElement('audio');
+      bgAudio.id = 'bg-keepalive';
+      bgAudio.loop = true;
+      bgAudio.setAttribute('playsinline', '');
+      bgAudio.setAttribute('webkit-playsinline', '');
+      bgAudio.style.display = 'none';
+      document.body.appendChild(bgAudio);
+    }
+    if (!bgAudio.src) bgAudio.src = SILENT_AUDIO_URI;
+  }
+  return bgAudio;
+}
+
+function startBgAudio() {
+  const a = getBgAudio();
+  if (a && a.paused) {
+    a.play().catch(() => {});
+  }
+}
+
+function stopBgAudio() {
+  const a = getBgAudio();
+  if (a && !a.paused) {
+    a.pause();
+  }
+}
+
 /* ================= player state ================= */
 const Player = {
   yt: null,
@@ -276,10 +312,16 @@ window.onYouTubeIframeAPIReady = () => {
           nextTrack(true);
         }
         if (e.data === YT.PlayerState.PLAYING) {
+          startBgAudio();
+          if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
           setTimeout(maybeRetryLyrics, 600);
           applyPlaybackQuality();
           setTimeout(applyPlaybackQuality, 500);
           setTimeout(applyPlaybackQuality, 2000);
+        }
+        if (e.data === YT.PlayerState.PAUSED) {
+          stopBgAudio();
+          if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
         }
         if (e.data === YT.PlayerState.BUFFERING) applyPlaybackQuality();
         document.body.classList.toggle('paused', e.data !== YT.PlayerState.PLAYING);
@@ -431,11 +473,49 @@ function moveQueued(i, dir) {
   renderQueue();
 }
 
+function updateMediaSessionMetadata(s) {
+  if (!('mediaSession' in navigator) || !s) return;
+  const title = displayTitle(s.title) || s.title || '';
+  const artist = s.artist || s.subtitle || '';
+  const artwork = [];
+  if (s.thumbnail) {
+    artwork.push(
+      { src: s.thumbnail, sizes: '96x96', type: 'image/png' },
+      { src: s.thumbnail, sizes: '128x128', type: 'image/png' },
+      { src: s.thumbnail, sizes: '192x192', type: 'image/png' },
+      { src: s.thumbnail, sizes: '256x256', type: 'image/png' },
+      { src: s.thumbnail, sizes: '512x512', type: 'image/png' }
+    );
+  }
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title,
+    artist,
+    album: 'Musik by HAM',
+    artwork,
+  });
+  navigator.mediaSession.setActionHandler('previoustrack', prevTrack);
+  navigator.mediaSession.setActionHandler('nexttrack', () => nextTrack(false));
+  navigator.mediaSession.setActionHandler('play', () => {
+    startBgAudio();
+    if (Player.yt && Player.ready) Player.yt.playVideo();
+  });
+  navigator.mediaSession.setActionHandler('pause', () => {
+    stopBgAudio();
+    if (Player.yt && Player.ready) Player.yt.pauseVideo();
+  });
+  navigator.mediaSession.setActionHandler('seekto', (details) => {
+    if (details.seekTime != null && Player.yt && Player.ready) {
+      Player.yt.seekTo(details.seekTime, true);
+    }
+  });
+}
+
 function startCurrent() {
   Player.cued = false;
   Player.pending = null;
   const s = Player.current;
   if (!s) return;
+  startBgAudio();
   const loadId = ++Player.loadId;
   const tryPlay = () => {
     if (loadId !== Player.loadId) return;
@@ -461,16 +541,7 @@ function startCurrent() {
   document.body.classList.add('has-player');
   document.title = `${s.title} • Rich Music`;
   applyTint(s.videoId || s.title);
-  if ('mediaSession' in navigator) {
-    navigator.mediaSession.metadata = new MediaMetadata({
-      title: s.title, artist: s.artist || '',
-      artwork: s.thumbnail ? [{ src: s.thumbnail, sizes: '544x544' }] : [],
-    });
-    navigator.mediaSession.setActionHandler('previoustrack', prevTrack);
-    navigator.mediaSession.setActionHandler('nexttrack', () => nextTrack(false));
-    navigator.mediaSession.setActionHandler('play', () => Player.yt && Player.yt.playVideo());
-    navigator.mediaSession.setActionHandler('pause', () => Player.yt && Player.yt.pauseVideo());
-  }
+  updateMediaSessionMetadata(s);
   loadLyrics(s);
   loadSponsorBlock(s.videoId);
   // refresh related tab lazily
@@ -557,8 +628,13 @@ function togglePlay() {
   }
   if (!Player.yt || !Player.ready) return;
   const st = Player.yt.getPlayerState();
-  if (st === YT.PlayerState.PLAYING) Player.yt.pauseVideo();
-  else Player.yt.playVideo();
+  if (st === YT.PlayerState.PLAYING) {
+    stopBgAudio();
+    Player.yt.pauseVideo();
+  } else {
+    startBgAudio();
+    Player.yt.playVideo();
+  }
 }
 function playPendingSong() {
   const s = Player.pending;
@@ -583,6 +659,7 @@ let _lastTick = null;
 setInterval(() => {
   if (!Player.yt || !Player.ready || !Player.current || !Player.yt.getDuration) return;
   const cur = Player.yt.getCurrentTime() || 0;
+  const dur = Player.yt.getDuration() || 0;
   // local scrobble: accumulate listen time while playing
   const playing = Player.yt.getPlayerState && Player.yt.getPlayerState() === YT.PlayerState.PLAYING;
   const now = Date.now();
@@ -596,7 +673,16 @@ setInterval(() => {
       toast(`⏩ Skipped ${seg.category.replace('_', ' ')} (SponsorBlock)`);
     }
   }
-  const dur = Player.yt.getDuration() || 0;
+  // sync MediaSession playback position state
+  if ('mediaSession' in navigator && 'setPositionState' in navigator.mediaSession && dur > 0) {
+    try {
+      navigator.mediaSession.setPositionState({
+        duration: dur,
+        playbackRate: Player.speed || 1,
+        position: Math.min(cur, dur),
+      });
+    } catch {}
+  }
   const pct = dur ? (cur / dur) * 100 : 0;
   $('#mini-progress-fill').style.width = pct + '%';
   const knob = $('.pb-knob');
@@ -1547,7 +1633,7 @@ function searchResultsHTML(sections) {
     if (!items.length) return;
     const title = SEARCH_TYPE_LABEL[t];
     html += (t === 'song' || t === 'video')
-      ? `<div class="shelf"><div class="shelf-title">${title}</dijoin('')}</div></div>`
+      ? `<div class="shelf"><div class="shelf-title">${title}</div><div class="track-list">${items.map((i) => trackRowHTML(i)).join('')}</div></div>`
       : `<div class="shelf"><div class="shelf-title">${title}</div>${carouselHTML(items.map(cardHTML).join(''))}</div>`;
   });
   return html || emptyHTML('No results', 'Try a different spelling or another artist, song, or playlist.', { ic: 'i-search' });
@@ -1990,7 +2076,7 @@ function viewLocalPlaylist(view, pid) {
         row.classList.add('dragging');
       });
       row.addEventListener('dragend', () => row.classList.remove('dragging'));
-      row.addEventListener('dragover', (e) => { e.preventDefault(); row.classList.add('drag-over'); });
+      row.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; row.classList.add('drag-over'); });
       row.addEventListener('dragleave', () => row.classList.remove('drag-over'));
       row.addEventListener('drop', (e) => {
         e.preventDefault();
@@ -2243,6 +2329,7 @@ function openSleepTimer() {
     $('#np-sleep') && $('#np-sleep').classList.remove('on');
     if (m > 0) {
       Player.sleepTimer = setTimeout(() => {
+        stopBgAudio();
         Player.yt && Player.yt.pauseVideo();
         Player.sleepTimer = null;
         $('#np-sleep') && $('#np-sleep').classList.remove('on');
