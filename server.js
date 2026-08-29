@@ -58,7 +58,6 @@ function normalizeDuration(s) {
 }
 
 function runsInfo(o) {
-  // extract artists/albums with browseIds from runs
   const out = [];
   if (!o || !o.runs) return out;
   for (const r of o.runs) {
@@ -104,7 +103,6 @@ function endpointInfo(nav) {
 function parseTwoRow(r) {
   const nav = r.navigationEndpoint || {};
   let info = endpointInfo(nav);
-  // title may browse to album/playlist even if overlay is a watchEndpoint
   if (!info.browseId && r.title && r.title.runs) {
     const tNav = r.title.runs[0] && r.title.runs[0].navigationEndpoint;
     const extra = endpointInfo(tNav || {});
@@ -122,7 +120,6 @@ function parseTwoRow(r) {
     artists: runsInfo(r.subtitle),
     ...info,
   };
-  // circle thumbnails => artist
   if (r.thumbnailRenderer && findFirst(r, 'musicThumbnailRenderer')) {
     const style = findFirst(r, 'musicThumbnailRenderer').thumbnailCrop;
     if (style === 'MUSIC_THUMBNAIL_CROP_CIRCLE') item.type = 'artist';
@@ -170,7 +167,6 @@ function parseListItem(r) {
     album: albums[0] || null,
     ...navInfo,
   };
-  // duration from fixed column
   const fixed = findFirst(r, 'musicResponsiveListItemFixedColumnRenderer');
   if (fixed) item.duration = normalizeDuration(text(fixed.text));
   return item;
@@ -221,7 +217,6 @@ app.get('/api/home', async (req, res) => {
       let sections = [];
       let sl = findFirst(d, 'sectionListRenderer');
       if (sl) sections = parseSections(sl.contents);
-      // fetch a few continuations for more shelves
       let cont = sl && sl.continuations && sl.continuations[0] && sl.continuations[0].nextContinuationData;
       let n = 0;
       while (cont && n < 3) {
@@ -251,6 +246,42 @@ app.get('/api/charts', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+/* Direct Audio Stream route via reliable Piped / Invidious instances */
+app.get('/api/stream', async (req, res) => {
+  const { videoId } = req.query;
+  if (!videoId) {
+    return res.status(400).json({ error: 'videoId is required' });
+  }
+
+  const pipedInstances = [
+    'https://pipedapi.kavin.rocks',
+    'https://api.piped.privacydev.net',
+    'https://pipedapi.tokhmi.xyz',
+    'https://api-piped.mha.fi'
+  ];
+
+  for (const base of pipedInstances) {
+    try {
+      const response = await fetch(`${base}/streams/${encodeURIComponent(videoId)}`, {
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+        signal: AbortSignal.timeout(5000)
+      });
+      if (response.ok) {
+        const data = await response.json();
+        const audioStreams = data.audioStreams || [];
+        const bestAudio = audioStreams.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
+        if (bestAudio && bestAudio.url) {
+          return res.redirect(302, bestAudio.url);
+        }
+      }
+    } catch (e) {
+      continue;
+    }
+  }
+
+  return res.status(502).json({ error: 'Failed to extract audio stream' });
 });
 
 /* SponsorBlock segments (skip non-music parts) */
@@ -314,7 +345,6 @@ app.get('/api/search', async (req, res) => {
         .filter((x) => x && x.title);
       if (items.length) sections.push({ title: text(shelf.title), items });
     }
-    // Newer general-search layout: flat itemSectionRenderers, one item each
     if (!sections.length) {
       const flat = [];
       const seen = new Set();
@@ -385,7 +415,6 @@ app.get('/api/next', async (req, res) => {
       thumbnail: thumbs(p.thumbnail),
       selected: !!p.selected,
     }));
-    // lyrics + related browse ids from tabs
     let lyricsBrowseId = null;
     let relatedBrowseId = null;
     for (const tab of findAll(d, 'tabRenderer')) {
@@ -405,7 +434,6 @@ app.get('/api/related', async (req, res) => {
     const d = await yt('browse', { browseId: req.query.browseId });
     const sl = findFirst(d, 'sectionListRenderer');
     let sections = sl ? parseSections(sl.contents) : [];
-    // some related pages use grids instead of carousels/shelves
     for (const g of findAll(d, 'gridRenderer')) {
       const items = (g.items || [])
         .map((c) => {
@@ -416,7 +444,6 @@ app.get('/api/related', async (req, res) => {
         .filter((x) => x && x.title);
       if (items.length) sections.push({ title: text(findFirst(g.header || {}, 'title') || {}), items });
     }
-    // dedupe empty-title dupes & drop empty sections
     sections = sections.filter((x) => x.items && x.items.length);
     res.json({ sections });
   } catch (e) {
@@ -432,71 +459,63 @@ async function browsePage(rawId, params) {
   if (params) body.params = params;
   const d = await yt('browse', body);
 
-    // header
-    let header = null;
-    const hResp =
-      findFirst(d, 'musicResponsiveHeaderRenderer') ||
-      findFirst(d, 'musicDetailHeaderRenderer') ||
-      findFirst(d, 'musicImmersiveHeaderRenderer') ||
-      findFirst(d, 'musicVisualHeaderRenderer') ||
-      findFirst(d, 'musicEditablePlaylistDetailHeaderRenderer');
-    if (hResp) {
-      header = {
-        title: text(hResp.title),
-        subtitle: [text(hResp.subtitle), text(hResp.secondSubtitle)].filter(Boolean).join(' • '),
-        description: text(hResp.description) || text(findFirst(hResp, 'description') || {}),
-        thumbnail: thumbs(hResp.thumbnail || hResp.foregroundThumbnail || {}),
-        artists: runsInfo(hResp.subtitle).concat(runsInfo(hResp.straplineTextOne)),
-        strapline: text(hResp.straplineTextOne),
-      };
-      if (!header.thumbnail) header.thumbnail = thumbs(hResp);
+  let header = null;
+  const hResp =
+    findFirst(d, 'musicResponsiveHeaderRenderer') ||
+    findFirst(d, 'musicDetailHeaderRenderer') ||
+    findFirst(d, 'musicImmersiveHeaderRenderer') ||
+    findFirst(d, 'musicVisualHeaderRenderer') ||
+    findFirst(d, 'musicEditablePlaylistDetailHeaderRenderer');
+  if (hResp) {
+    header = {
+      title: text(hResp.title),
+      subtitle: [text(hResp.subtitle), text(hResp.secondSubtitle)].filter(Boolean).join(' • '),
+      description: text(hResp.description) || text(findFirst(hResp, 'description') || {}),
+      thumbnail: thumbs(hResp.thumbnail || hResp.foregroundThumbnail || {}),
+      artists: runsInfo(hResp.subtitle).concat(runsInfo(hResp.straplineTextOne)),
+      strapline: text(hResp.straplineTextOne),
+    };
+    if (!header.thumbnail) header.thumbnail = thumbs(hResp);
+  }
+
+  let playlistId = null;
+  const wpe = findFirst(d, 'watchPlaylistEndpoint');
+  if (wpe) playlistId = wpe.playlistId;
+
+  let tracks = [];
+  const shelves = findAll(d, 'musicShelfRenderer').concat(findAll(d, 'musicPlaylistShelfRenderer'));
+  for (const shelf of shelves) {
+    const items = (shelf.contents || [])
+      .map((c) => (c.musicResponsiveListItemRenderer ? parseListItem(c.musicResponsiveListItemRenderer) : null))
+      .filter((x) => x && x.title);
+    if (items.length && items.filter((i) => i.videoId).length >= items.length / 2 && !tracks.length) {
+      tracks = items;
     }
+  }
 
-    // shuffle/radio playlist ids
-    let playlistId = null;
-    const wpe = findFirst(d, 'watchPlaylistEndpoint');
-    if (wpe) playlistId = wpe.playlistId;
+  let sections = [];
+  const sl = findFirst(d, 'sectionListRenderer');
+  if (sl) sections = parseSections(sl.contents).filter((s) => !s.list || !tracks.length);
+  if (tracks.length) sections = sections.filter((s) => !(s.list && s.items[0] && s.items[0].videoId === tracks[0].videoId));
 
-    // track list (musicShelfRenderer or playlistShelfRenderer contents)
-    let tracks = [];
-    const shelves = findAll(d, 'musicShelfRenderer').concat(findAll(d, 'musicPlaylistShelfRenderer'));
-    for (const shelf of shelves) {
-      const items = (shelf.contents || [])
-        .map((c) => (c.musicResponsiveListItemRenderer ? parseListItem(c.musicResponsiveListItemRenderer) : null))
-        .filter((x) => x && x.title);
-      if (items.length && items.filter((i) => i.videoId).length >= items.length / 2 && !tracks.length) {
-        tracks = items;
-      }
+  const grids = findAll(d, 'gridRenderer');
+  for (const g of grids) {
+    const items = (g.items || [])
+      .map((c) => (c.musicTwoRowItemRenderer ? parseTwoRow(c.musicTwoRowItemRenderer) : null))
+      .filter(Boolean);
+    if (items.length) sections.push({ title: text(findFirst(g.header || {}, 'title') || {}), items });
+  }
+
+  if (header && !header.thumbnail && tracks[0]) header.thumbnail = tracks[0].thumbnail;
+  if (header && tracks.length) {
+    const ha = (header.artists && header.artists[0]) || (header.strapline ? { name: header.strapline } : null);
+    if (ha && ha.name) {
+      tracks = tracks.map((t) => {
+        if (t.artist || (t.artists && t.artists.length)) return t;
+        return { ...t, artist: ha.name, artists: t.artists && t.artists.length ? t.artists : [ha], artistBrowseId: ha.browseId || t.artistBrowseId };
+      });
     }
-
-    // other sections (carousels: related albums, artist albums etc.)
-    let sections = [];
-    const sl = findFirst(d, 'sectionListRenderer');
-    if (sl) sections = parseSections(sl.contents).filter((s) => !s.list || !tracks.length);
-    // for artist pages the first musicShelf (songs) is in sections too; dedupe
-    if (tracks.length) sections = sections.filter((s) => !(s.list && s.items[0] && s.items[0].videoId === tracks[0].videoId));
-
-    // grid (mood/genre pages)
-    const grids = findAll(d, 'gridRenderer');
-    for (const g of grids) {
-      const items = (g.items || [])
-        .map((c) => (c.musicTwoRowItemRenderer ? parseTwoRow(c.musicTwoRowItemRenderer) : null))
-        .filter(Boolean);
-      if (items.length) sections.push({ title: text(findFirst(g.header || {}, 'title') || {}), items });
-    }
-
-    // fallback thumbnail from first track
-    if (header && !header.thumbnail && tracks[0]) header.thumbnail = tracks[0].thumbnail;
-    // album pages often omit per-track artist; copy from header
-    if (header && tracks.length) {
-      const ha = (header.artists && header.artists[0]) || (header.strapline ? { name: header.strapline } : null);
-      if (ha && ha.name) {
-        tracks = tracks.map((t) => {
-          if (t.artist || (t.artists && t.artists.length)) return t;
-          return { ...t, artist: ha.name, artists: t.artists && t.artists.length ? t.artists : [ha], artistBrowseId: ha.browseId || t.artistBrowseId };
-        });
-      }
-    }
+  }
 
   return { header, tracks, sections, playlistId };
 }
@@ -509,14 +528,9 @@ app.get('/api/browse', async (req, res) => {
   }
 });
 
-/* ---------------- music download via third-party converter (loader.to) ----------------
-   Highest quality MP3 (320kbps). Our server orchestrates the conversion job:
-   start -> poll progress -> hand the final direct file URL to the browser.
-   The user never sees or visits the third-party site — the file just downloads. */
 const LOADER_API = 'https://loader.to/ajax/download.php';
 const DL_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
-/* start a conversion job: returns { jobId, progressUrl } */
 app.get('/api/download-start', async (req, res) => {
   const videoId = String(req.query.videoId || '');
   if (!/^[\w-]{6,20}$/.test(videoId)) return res.status(400).json({ error: 'bad id' });
@@ -532,7 +546,6 @@ app.get('/api/download-start', async (req, res) => {
   }
 });
 
-/* poll job progress: returns { progress (0-1000), done, url } */
 app.get('/api/download-progress', async (req, res) => {
   const purl = String(req.query.progressUrl || '');
   try {
@@ -557,7 +570,6 @@ app.get('/api/download-progress', async (req, res) => {
   }
 });
 
-/* resolve a YT Music / YouTube URL (playlist, album, artist, song) into an app route */
 app.get('/api/resolve', async (req, res) => {
   try {
     const raw = String(req.query.url || '').trim();
@@ -575,10 +587,6 @@ app.get('/api/resolve', async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
-
-/* ---------------- lyrics: multi-strategy matcher ----------------
-   LRCLIB (synced) -> LRCLIB fuzzy -> YouTube Music (plain)
-   -> NetEase (synced/plain) -> lyrics.ovh (plain). */
 
 function displayTitle(t) {
   const raw = String(t || '').trim();
@@ -762,7 +770,6 @@ app.get('/api/lyrics', async (req, res) => {
 
     let synced = null, plain = null, source = null;
 
-    // 1) YouTube Music lyrics for this exact video (plain, but correct)
     if (browseId) {
       try {
         const body = {
@@ -782,7 +789,6 @@ app.get('/api/lyrics', async (req, res) => {
       } catch {}
     }
 
-    // 2) LRCLIB exact (synced preferred) — parallel
     const exactHits = await Promise.all([
       lrclibGet(tUse, aUse, duration),
       lrclibGet(tUse, aUse, 0),
@@ -796,7 +802,6 @@ app.get('/api/lyrics', async (req, res) => {
       if (synced) break;
     }
 
-    // 3) Fuzzy LRCLIB + other catalogs in parallel when still no synced
     if (!synced) {
       const [s1, s2, s3, ne, ovh, tx] = await Promise.all([
         lrclibSearch({ track_name: tUse, artist_name: aUse }),
@@ -836,8 +841,6 @@ app.get('/api/lyrics', async (req, res) => {
   }
 });
 
-
-/* album-art proxy so the PiP canvas is not CORS-tainted */
 app.get('/api/thumb', async (req, res) => {
   try {
     const raw = String(req.query.url || '');
