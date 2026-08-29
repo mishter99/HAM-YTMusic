@@ -1,4 +1,4 @@
-/* Rich Music - backend proxy for YouTube Music InnerTube API + LRCLIB lyrics */
+/* HAM Music - backend proxy for YouTube Music InnerTube API + LRCLIB lyrics */
 const express = require('express');
 const path = require('path');
 
@@ -248,75 +248,27 @@ app.get('/api/charts', async (req, res) => {
   }
 });
 
-/* Direct Audio Stream route */
+/* Direct Audio Stream route via Piped and Invidious fallback */
 app.get('/api/stream', async (req, res) => {
   const { videoId } = req.query;
   if (!videoId) {
     return res.status(400).json({ error: 'videoId is required' });
   }
 
-  try {
-    const body = {
-      context: {
-        client: {
-          clientName: 'ANDROID',
-          clientVersion: '19.09.37',
-          androidSdkVersion: 30,
-          hl: 'id',
-          gl: 'ID',
-        },
-      },
-      videoId: String(videoId),
-      playbackContext: {
-        contentPlaybackContext: {
-          signatureTimestamp: 19800,
-        },
-      },
-    };
-
-    const response = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip',
-      },
-      body: JSON.stringify(body),
-    });
-
-    if (response.ok) {
-      const data = await response.json();
-      const streamingData = data.streamingData || {};
-      const formats = (streamingData.adaptiveFormats || []).concat(streamingData.formats || []);
-      const audioFormats = formats.filter((f) => f.mimeType && f.mimeType.startsWith('audio/') && f.url);
-      const bestAudio = audioFormats.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
-
-      if (bestAudio && bestAudio.url) {
-        return res.redirect(302, bestAudio.url);
-      }
-
-      const fallbackFormat = formats.find((f) => f.url);
-      if (fallbackFormat && fallbackFormat.url) {
-        return res.redirect(302, fallbackFormat.url);
-      }
-    }
-  } catch (err) {
-    // continue fallback
-  }
-
-  // Fallback instances
+  // 1. Piped Instances
   const pipedInstances = [
     'https://pipedapi.kavin.rocks',
     'https://pipedapi.leptons.xyz',
     'https://pipedapi.adminforge.de',
     'https://piped-api.lunar.icu',
-    'https://api-piped.mha.fi',
+    'https://api-piped.mha.fi'
   ];
 
   for (const base of pipedInstances) {
     try {
       const response = await fetch(`${base}/streams/${encodeURIComponent(videoId)}`, {
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
-        signal: AbortSignal.timeout(3500),
+        signal: AbortSignal.timeout(3500)
       });
       if (response.ok) {
         const data = await response.json();
@@ -324,6 +276,34 @@ app.get('/api/stream', async (req, res) => {
         const bestAudio = audioStreams.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
         if (bestAudio && bestAudio.url) {
           return res.redirect(302, bestAudio.url);
+        }
+      }
+    } catch (e) {
+      continue;
+    }
+  }
+
+  // 2. Invidious Instances
+  const invidiousInstances = [
+    'https://invidious.nerdvpn.de',
+    'https://inv.tux.pizza',
+    'https://invidious.drgns.space',
+    'https://vid.puffyan.us'
+  ];
+
+  for (const base of invidiousInstances) {
+    try {
+      const response = await fetch(`${base}/api/v1/videos/${encodeURIComponent(videoId)}`, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+        signal: AbortSignal.timeout(3500)
+      });
+      if (response.ok) {
+        const data = await response.json();
+        const adaptive = data.adaptiveFormats || [];
+        const audios = adaptive.filter((f) => f.type && f.type.startsWith('audio/'));
+        const best = audios.sort((a, b) => (Number(b.bitrate) || 0) - (Number(a.bitrate) || 0))[0];
+        if (best && best.url) {
+          return res.redirect(302, best.url);
         }
       }
     } catch (e) {
@@ -738,7 +718,7 @@ async function neteaseLyrics(title, artist) {
 async function lrclibGet(title, artist, duration) {
   try {
     const u = `https://lrclib.net/api/get?track_name=${encodeURIComponent(title)}&artist_name=${encodeURIComponent(artist)}${duration ? `&duration=${Math.round(duration)}` : ''}`;
-    const r = await fetchTimeout(u, { headers: { 'User-Agent': 'RichMusic/1.0' } }, 4000);
+    const r = await fetchTimeout(u, { headers: { 'User-Agent': 'HAMMusic/1.0' } }, 4000);
     if (!r.ok) return null;
     const j = await r.json();
     if (j.instrumental) return null;
@@ -748,7 +728,7 @@ async function lrclibGet(title, artist, duration) {
 async function lrclibSearch(params) {
   try {
     const qs = new URLSearchParams(params).toString();
-    const r = await fetchTimeout(`https://lrclib.net/api/search?${qs}`, { headers: { 'User-Agent': 'RichMusic/1.0' } }, 4000);
+    const r = await fetchTimeout(`https://lrclib.net/api/search?${qs}`, { headers: { 'User-Agent': 'HAMMusic/1.0' } }, 4000);
     if (!r.ok) return [];
     return await r.json();
   } catch { return []; }
@@ -902,7 +882,7 @@ app.get('/api/thumb', async (req, res) => {
       host.endsWith('googleusercontent.com');
     if (!ok) return res.status(400).end();
     const r = await fetch(raw, {
-      headers: { 'User-Agent': 'Mozilla/5.0 RichMusicThumb/1.0', Accept: 'image/*' },
+      headers: { 'User-Agent': 'Mozilla/5.0 HAMMusicThumb/1.0', Accept: 'image/*' },
     });
     if (!r.ok) return res.status(502).end();
     res.setHeader('Content-Type', r.headers.get('content-type') || 'image/jpeg');
@@ -913,10 +893,82 @@ app.get('/api/thumb', async (req, res) => {
   }
 });
 
+/* Direct Audio Stream route using Piped & Cobalt proxy fallbacks */
+app.get('/api/stream', async (req, res) => {
+  const { videoId } = req.query;
+  if (!videoId) {
+    return res.status(400).json({ error: 'videoId is required' });
+  }
+
+  // 1. Piped Instances
+  const pipedInstances = [
+    'https://pipedapi.kavin.rocks',
+    'https://pipedapi.leptons.xyz',
+    'https://pipedapi.adminforge.de',
+    'https://piped-api.lunar.icu',
+    'https://api-piped.mha.fi'
+  ];
+
+  for (const base of pipedInstances) {
+    try {
+      const response = await fetch(`${base}/streams/${encodeURIComponent(videoId)}`, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+        signal: AbortSignal.timeout(3500)
+      });
+      if (response.ok) {
+        const data = await response.json();
+        const audioStreams = data.audioStreams || [];
+        const bestAudio = audioStreams.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
+        if (bestAudio && bestAudio.url) {
+          return res.redirect(302, bestAudio.url);
+        }
+      }
+    } catch (e) {
+      continue;
+    }
+  }
+
+  // 2. Cobalt API Fallback (Public instances)
+  const cobaltInstances = [
+    'https://co.wuk.sh/api/json',
+    'https://cobalt.kwi.moe/api/json'
+  ];
+
+  for (const cobaltUrl of cobaltInstances) {
+    try {
+      const response = await fetch(cobaltUrl, {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          'User-Agent': 'Mozilla/5.0'
+        },
+        body: JSON.stringify({
+          url: `https://www.youtube.com/watch?v=${videoId}`,
+          isAudioOnly: true,
+          dubLang: false
+        }),
+        signal: AbortSignal.timeout(4000)
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        if (result && result.url) {
+          return res.redirect(302, result.url);
+        }
+      }
+    } catch (e) {
+      continue;
+    }
+  }
+
+  return res.status(502).json({ error: 'Failed to extract audio stream from all instances' });
+});
+
 app.use((req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
 const PORT = process.env.PORT || 3000;
 if (require.main === module) {
-  app.listen(PORT, '0.0.0.0', () => console.log(`Rich Music running on :${PORT}`));
+  app.listen(PORT, '0.0.0.0', () => console.log(`HAM Music running on :${PORT}`));
 }
 module.exports = app;
