@@ -3165,5 +3165,13 @@ document.addEventListener('error', (e) => {
 }, true);
 window.addEventListener('pagehide', persistQueue);
 document.addEventListener('visibilitychange', () => { if (document.hidden) persistQueue(); });
+// Daftarkan Service Worker untuk PWA Standalone murni
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch((err) => {
+      console.warn('SW registration failed:', err);
+    });
+  });
+}
 restoreQueue();
 route();
