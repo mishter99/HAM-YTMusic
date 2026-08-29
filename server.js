@@ -248,40 +248,69 @@ app.get('/api/charts', async (req, res) => {
   }
 });
 
-/* Direct Audio Stream route via reliable Piped & Invidious instances */
+/* Direct Audio Stream via Official YouTube InnerTube Android/iOS Client */
 app.get('/api/stream', async (req, res) => {
   const { videoId } = req.query;
   if (!videoId) {
     return res.status(400).json({ error: 'videoId is required' });
   }
 
-  // 1. Coba melalui Piped API Instances
-  const pipedInstances = [
-    'https://pipedapi.kavin.rocks',
-    'https://pipedapi.leptons.xyz',
-    'https://pipedapi.adminforge.de',
-    'https://piped-api.lunar.icu',
-    'https://api-piped.mha.fi'
-  ];
-
-  for (const base of pipedInstances) {
-    try {
-      const response = await fetch(`${base}/streams/${encodeURIComponent(videoId)}`, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
-        signal: AbortSignal.timeout(3500)
-      });
-      if (response.ok) {
-        const data = await response.json();
-        const audioStreams = data.audioStreams || [];
-        const bestAudio = audioStreams.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
-        if (bestAudio && bestAudio.url) {
-          return res.redirect(302, bestAudio.url);
+  try {
+    // Meminta player stream langsung ke InnerTube menggunakan Android Client context
+    const body = {
+      context: {
+        client: {
+          clientName: 'ANDROID',
+          clientVersion: '19.09.37',
+          androidSdkVersion: 30,
+          hl: 'id',
+          gl: 'ID'
+        }
+      },
+      videoId: videoId,
+      playbackContext: {
+        contentPlaybackContext: {
+          signatureTimestamp: 19800
         }
       }
-    } catch (e) {
-      continue;
+    };
+
+    const response = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip'
+      },
+      body: JSON.stringify(body)
+    });
+
+    if (!response.ok) {
+      throw new Error(`InnerTube Player API status: ${response.status}`);
     }
+
+    const data = await response.json();
+    const streamingData = data.streamingData || {};
+    const formats = (streamingData.adaptiveFormats || []).concat(streamingData.formats || []);
+
+    // Filter format audio murni (audio/mp4, audio/webm) yang memiliki URL direct langsung
+    const audioFormats = formats.filter(f => f.mimeType && f.mimeType.startsWith('audio/') && f.url);
+    const bestAudio = audioFormats.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
+
+    if (bestAudio && bestAudio.url) {
+      return res.redirect(302, bestAudio.url);
+    }
+
+    // Fallback format campuran jika format audio terpisah memerlukan signature deciphering
+    const fallbackFormat = formats.find(f => f.url);
+    if (fallbackFormat && fallbackFormat.url) {
+      return res.redirect(302, fallbackFormat.url);
+    }
+
+    return res.status(502).json({ error: 'No direct audio URL available for this track' });
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Failed to extract audio' });
   }
+});
 
   // 2. Fallback melalui Invidious API Instances jika Piped gagal
   const invidiousInstances = [
