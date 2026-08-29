@@ -248,25 +248,27 @@ app.get('/api/charts', async (req, res) => {
   }
 });
 
-/* Direct Audio Stream route via reliable Piped / Invidious instances */
+/* Direct Audio Stream route via reliable Piped & Invidious instances */
 app.get('/api/stream', async (req, res) => {
   const { videoId } = req.query;
   if (!videoId) {
     return res.status(400).json({ error: 'videoId is required' });
   }
 
+  // 1. Coba melalui Piped API Instances
   const pipedInstances = [
     'https://pipedapi.kavin.rocks',
-    'https://api.piped.privacydev.net',
-    'https://pipedapi.tokhmi.xyz',
+    'https://pipedapi.leptons.xyz',
+    'https://pipedapi.adminforge.de',
+    'https://piped-api.lunar.icu',
     'https://api-piped.mha.fi'
   ];
 
   for (const base of pipedInstances) {
     try {
       const response = await fetch(`${base}/streams/${encodeURIComponent(videoId)}`, {
-        headers: { 'User-Agent': 'Mozilla/5.0' },
-        signal: AbortSignal.timeout(5000)
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+        signal: AbortSignal.timeout(3500)
       });
       if (response.ok) {
         const data = await response.json();
@@ -281,7 +283,35 @@ app.get('/api/stream', async (req, res) => {
     }
   }
 
-  return res.status(502).json({ error: 'Failed to extract audio stream' });
+  // 2. Fallback melalui Invidious API Instances jika Piped gagal
+  const invidiousInstances = [
+    'https://invidious.nerdvpn.de',
+    'https://inv.tux.pizza',
+    'https://invidious.drgns.space',
+    'https://vid.puffyan.us'
+  ];
+
+  for (const base of invidiousInstances) {
+    try {
+      const response = await fetch(`${base}/api/v1/videos/${encodeURIComponent(videoId)}`, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+        signal: AbortSignal.timeout(3500)
+      });
+      if (response.ok) {
+        const data = await response.json();
+        const adaptive = data.adaptiveFormats || [];
+        const audios = adaptive.filter((f) => f.type && f.type.startsWith('audio/'));
+        const best = audios.sort((a, b) => (Number(b.bitrate) || 0) - (Number(a.bitrate) || 0))[0];
+        if (best && best.url) {
+          return res.redirect(302, best.url);
+        }
+      }
+    } catch (e) {
+      continue;
+    }
+  }
+
+  return res.status(502).json({ error: 'Failed to extract audio stream from all instances' });
 });
 
 /* SponsorBlock segments (skip non-music parts) */
