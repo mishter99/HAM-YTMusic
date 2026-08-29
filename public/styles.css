@@ -1160,7 +1160,27 @@ body.hq-audio #yt-player {
 @media (max-width: 860px){
   #app { padding: 0; gap: 0; }
   #sidebar { display: none; }
-  #topbar { display: none; }
+  #topbar {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    padding: 14px 16px 6px;
+    background: transparent;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    position: relative;
+  }
+  .tb-nav, #tb-search { display: none !important; }
+  .tb-actions { margin-left: 0; }
+  #theme-toggle {
+    width: 36px;
+    height: 36px;
+    background: var(--hover-strong);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    color: var(--text);
+  }
+  #theme-toggle:hover { background: color-mix(in srgb, var(--text) 20%, transparent); }
   #main { border-radius: 0; }
   :root { --player-h: 64px; }
   .np-handle { display: block; }
@@ -1182,7 +1202,7 @@ body.hq-audio #yt-player {
   .pb-buttons { gap: 8px; }
   #mini-shuffle, #mini-repeat { display: none; }
   .play-circle { width: 34px; height: 34px; }
-  #view { padding: 18px 16px 30px; }
+  #view { padding: 4px 16px 30px; }
   .sr-top { flex-direction: row; gap: 14px; padding: 12px; }
   .sr-top img, .art-ph-sr { width: 92px; height: 92px; }
   .sr-title { font-size: 20px; }
